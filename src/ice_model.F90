@@ -40,6 +40,7 @@ use MOM_time_manager,  only : time_type, time_type_to_real, real_to_time
 use MOM_time_manager,  only : operator(+), operator(-)
 use MOM_time_manager,  only : operator(>), operator(*), operator(/), operator(/=)
 use MOM_unit_scaling,  only : unit_scale_type, unit_scaling_init, unit_scaling_end
+use MOM_error_handler, only : stdout, is_root_pe
 
 use astronomy_mod, only : astronomy_init, astronomy_end
 use astronomy_mod, only : universal_time, orbital_time, diurnal_solar, daily_mean_solar
@@ -380,6 +381,13 @@ subroutine unpack_land_ice_boundary(Ice, LIB)
   type(unit_scale_type),   pointer :: US => NULL()
 
   integer :: i, j, k, m, n, i2, j2, k2, isc, iec, jsc, jec, i_off, j_off
+  integer :: isd, ied, jsd, jed
+
+  logical :: root    ! True only on the root PE
+  integer :: outunit ! The output unit to write to
+
+  outunit = stdout()
+  root = is_root_pe()
 
   if (.not.associated(Ice%fCS)) call SIS_error(FATAL, &
       "The pointer to Ice%fCS must be associated in unpack_land_ice_boundary.")
@@ -392,6 +400,10 @@ subroutine unpack_land_ice_boundary(Ice, LIB)
   US => Ice%fCS%US
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
+  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
+
+  if (LIB%do_IS .and. .not. ASSOCIATED(LIB%IS_adot_sg)) call SIS_error(FATAL,'LIB%IS_adot_sg not allocated')
+  if (LIB%do_IS .and. .not. ASSOCIATED(LIB%IS_mask_sg)) call SIS_error(FATAL,'LIB%IS_mask_sg not allocated')
 
   ! Store liquid runoff and other fluxes from the land to the ice or ocean.
   i_off = LBOUND(LIB%runoff,1) - G%isc ; j_off = LBOUND(LIB%runoff,2) - G%jsc
@@ -400,8 +412,8 @@ subroutine unpack_land_ice_boundary(Ice, LIB)
   do j=jsc,jec ; do i=isc,iec ; if (G%mask2dT(i,j) > 0.0) then
     i2 = i+i_off ; j2 = j+j_off
     FIA%runoff(i,j)  = US%kg_m2s_to_RZ_T*LIB%runoff(i2,j2)
-    FIA%calving(i,j) = US%kg_m2s_to_RZ_T*LIB%calving(i2,j2)
     FIA%runoff_hflx(i,j)  = US%W_m2_to_QRZ_T*LIB%runoff_hflx(i2,j2)
+    FIA%calving(i,j) = US%kg_m2s_to_RZ_T*LIB%calving(i2,j2)
     FIA%calving_hflx(i,j) = US%W_m2_to_QRZ_T*LIB%calving_hflx(i2,j2)
   else
     ! This is a land point from the perspective of the sea-ice.
@@ -411,6 +423,14 @@ subroutine unpack_land_ice_boundary(Ice, LIB)
     FIA%runoff(i,j)  = 0.0 ; FIA%calving(i,j) = 0.0
     FIA%runoff_hflx(i,j)  = 0.0 ; FIA%calving_hflx(i,j) = 0.0
   endif ; enddo ; enddo
+
+  if (LIB%do_IS .and. ALLOCATED(FIA%adot)) then
+    if (root) write(outunit,*) 'ICE SHEET SURFACE FLUX EXCHANGE is enabled'
+    do j=jsc,jec ; do i=isc,iec
+      i2 = i+i_off ; j2 = j+j_off
+      FIA%adot(i,j)  = US%kg_m2s_to_RZ_T * LIB%IS_adot_sg(i2,j2)
+    enddo ; enddo
+  endif
 
   if (Ice%fCS%debug) then
     call FIA_chksum("End of unpack_land_ice_boundary", FIA, G, Ice%fCS%US)
@@ -430,15 +450,15 @@ subroutine unpack_ocean_ice_boundary_calved_shelf_bergs(Ice, OIB)
 
   integer :: i, j, k, m, n, i2, j2, k2, isc, iec, jsc, jec, i_off, j_off
 
-  if (.not.associated(Ice%fCS)) call SIS_error(FATAL, &
-      "The pointer to Ice%fCS must be associated in unpack_ocean_ice_boundary_calved_shelf_bergs.")
-  if (.not.associated(Ice%fCS%FIA)) call SIS_error(FATAL, &
-      "The pointer to Ice%fCS%FIA must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
-  if (.not.associated(Ice%fCS%G)) call SIS_error(FATAL, &
-      "The pointer to Ice%fCS%G must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
+  if (.not.associated(Ice%sCS)) call SIS_error(FATAL, &
+      "The pointer to Ice%sCS must be associated in unpack_ocean_ice_boundary_calved_shelf_bergs.")
+  if (.not.associated(Ice%sCS%FIA)) call SIS_error(FATAL, &
+      "The pointer to Ice%sCS%FIA must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
+  if (.not.associated(Ice%sCS%G)) call SIS_error(FATAL, &
+      "The pointer to Ice%sCS%G must be associated in unpack_ocean_ice_boundary_calved_shelf_berg.")
 
-  FIA => Ice%fCS%FIA ; G => Ice%fCS%G
-  US => Ice%fCS%US
+  FIA => Ice%sCS%FIA ; G => Ice%sCS%G
+  US => Ice%sCS%US
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec
 
@@ -448,15 +468,14 @@ subroutine unpack_ocean_ice_boundary_calved_shelf_bergs(Ice, OIB)
   !$OMP                          private(i2,j2)
   do j=jsc,jec ; do i=isc,iec ; if (G%mask2dT(i,j) > 0.0) then
     i2 = i+i_off ; j2 = j+j_off
-    if (OIB%calving(i2,j2)>0.0) then
-      if (FIA%calving(i,j)>0.0) call SIS_error(FATAL,"Overlap in calving from snow discharge and ice shelf!")
-      FIA%calving(i,j) = US%kg_m2s_to_RZ_T*OIB%calving(i2,j2)
-      FIA%calving_hflx(i,j) = US%W_m2_to_QRZ_T*OIB%calving_hflx(i2,j2)
-    endif
+    !if (FIA%calving(i,j)>0.0 .and. OIB%calving(i2,j2)>0.0) &
+    !        call SIS_error(FATAL,"Overlap in calving from snow discharge and ice shelf!")
+    FIA%calving(i,j) = FIA%calving(i,j) + US%kg_m2s_to_RZ_T*OIB%calving(i2,j2)
+    FIA%calving_hflx(i,j) = FIA%calving_hflx(i,j) + US%W_m2_to_QRZ_T*OIB%calving_hflx(i2,j2)
   endif ; enddo ; enddo
 
-  if (Ice%fCS%debug) then
-    call FIA_chksum("End of unpack_ocean_ice_boundary_calved_shelf_berg", FIA, G, Ice%fCS%US)
+  if (Ice%sCS%debug) then
+    call FIA_chksum("End of unpack_ocean_ice_boundary_calved_shelf_berg", FIA, G, Ice%sCS%US)
   endif
 
 end subroutine unpack_ocean_ice_boundary_calved_shelf_bergs
@@ -660,6 +679,12 @@ subroutine set_ocean_top_fluxes(Ice, IST, IOF, FIA, OSS, G, US, IG, sCS)
     do j=jsc,jec ; do i=isc,iec
       i2 = i+i_off ; j2 = j+j_off! Use these to correct for indexing differences.
       Ice%lprec(i2,j2) = Ice%lprec(i2,j2) + US%RZ_T_to_kg_m2s*IOF%melt_nudge(i,j)
+    enddo ; enddo
+  endif
+  if (allocated(FIA%adot)) then
+    do j=jsc,jec ; do i=isc,iec
+      i2 = i+i_off ; j2 = j+j_off! Use these to correct for indexing differences.
+      Ice%adot(i2,j2) = US%RZ_T_to_kg_m2s*FIA%adot(i,j)
     enddo ; enddo
   endif
 
@@ -1622,7 +1647,7 @@ end subroutine add_diurnal_sw
 !> ice_model_init - initializes ice model data, parameters and diagnostics. It
 !! might operate on the fast ice processors, the slow ice processors or both.
 subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, &
-                          Verona_coupler, Concurrent_ice, gas_fluxes, gas_fields_ocn )
+                          Verona_coupler, Concurrent_ice, gas_fluxes, gas_fields_ocn, ice_sheet_enabled)
 
   type(ice_data_type), intent(inout) :: Ice            !< The ice data type that is being initialized.
   type(time_type)    , intent(in)    :: Time_Init      !< The starting time of the model integration
@@ -1648,6 +1673,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                                               !! in the calculation of additional gas or other
                                               !! tracer fluxes, and can be used to spawn related
                                               !! internal variables in the ice model.
+  logical, optional, intent(in)       :: ice_sheet_enabled
 
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
@@ -1688,6 +1714,8 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   ! Parameters that properly belong exclusively to ice_thm.
   real :: massless_ice_enth, massless_snow_enth ! Enthalpy fill values [Q ~> J kg-1]
   real :: massless_ice_salin  ! A salinity fill value [S ~> ppt]
+
+  logical :: do_IS
 
   real, allocatable, dimension(:,:) :: &
     h_ice_input, dummy   ! Temporary arrays.
@@ -1782,6 +1810,9 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                     "Ice%sCS%Ice_state structure. Model is already initialized.")
     return
   endif ; endif
+
+  do_IS=.false.
+  if (present(ice_sheet_enabled)) do_IS=ice_sheet_enabled
 
   ! For now, both fast and slow processes occur on all sea-ice PEs.
   fast_ice_PE = .true. ; slow_ice_PE = .true.
@@ -2113,7 +2144,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   ! Allocate and register fields for restarts.
 
     call ice_type_slow_reg_restarts(sGD%mpp_domain, CatIce, &
-                      param_file, Ice, Ice%Ice_restart)
+                      param_file, Ice, Ice%Ice_restart, ice_sheet_enabled=do_IS)
 
     call alloc_IST_arrays(sHI, sIG, US, sIST, omit_tsurf=Eulerian_tsurf, do_ridging=do_ridging)
     call ice_state_register_restarts(sIST, sG, sIG, US, Ice%Ice_restart)
@@ -2127,7 +2158,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                               do_iceberg_fields=Ice%sCS%do_icebergs, do_transmute=transmute_ice)
     Ice%sCS%IOF%slp2ocean = slp2ocean
     Ice%sCS%IOF%flux_uv_stagger = Ice%flux_uv_stagger
-    call alloc_fast_ice_avg(Ice%sCS%FIA, sHI, sIG, interp_fluxes, gas_fluxes)
+    call alloc_fast_ice_avg(Ice%sCS%FIA, sHI, sIG, interp_fluxes, gas_fluxes, ice_sheet_enabled=do_IS)
 
     if (Ice%sCS%redo_fast_update) then
       call alloc_total_sfc_flux(Ice%sCS%TSF, sHI, gas_fluxes)
@@ -2282,7 +2313,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                             omit_velocities=.true., omit_tsurf=Eulerian_tsurf)
     endif
     if (.not.single_IST) then
-      call alloc_fast_ice_avg(Ice%fCS%FIA, fHI, Ice%fCS%IG, interp_fluxes, gas_fluxes)
+      call alloc_fast_ice_avg(Ice%fCS%FIA, fHI, Ice%fCS%IG, interp_fluxes, gas_fluxes, ice_sheet_enabled=do_IS)
 
       call alloc_simple_OSS(Ice%fCS%sOSS, fHI, gas_fields_ocn)
     endif

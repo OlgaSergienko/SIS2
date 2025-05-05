@@ -112,9 +112,14 @@ type land_ice_boundary_type
     calving_hflx =>NULL() !< The heat flux associated with the temperature of
                          !! of the frozen runoff, relative to liquid? (or frozen?) water
                          !! at 0 degC [W m-2].
+  real, dimension(:,:),   pointer :: &
+    IS_adot_sg  =>NULL(), &    !< The mass flux over ice shelves [kg m-2 s-1].
+    IS_mask_sg  =>NULL()       !< The mask for ice shelves [kg m-2 s-1].
   real, dimension(:,:,:), pointer :: data => NULL() !< A collective field for "named" fields above
   integer   :: xtype     !< A flag indicating the exchange type, which may be set to
                          !! REGRID, REDIST or DIRECT and is used by coupler
+  logical   :: do_IS = .false.
+  logical   :: do_calve = .false.
 end type land_ice_boundary_type
 
 contains
@@ -217,6 +222,10 @@ subroutine lnd_ice_bnd_type_chksum(id, timestep, bnd_type)
   chks = SIS_chksum(bnd_type%runoff_hflx)  ; if (root) write(outunit,100) 'lnd_ice_bnd_type%runoff_hflx ', chks
   chks = SIS_chksum(bnd_type%calving_hflx) ; if (root) write(outunit,100) 'lnd_ice_bnd_type%calving_hflx', chks
   ! chks = SIS_chksum(bnd_type%data) ; if (root) write(outunit,100) 'lnd_ice_bnd_type%data    ', chks
+  if(bnd_type%do_IS) then
+     chks = SIS_chksum(bnd_type%IS_adot_sg)
+     if (root) write(outunit,100) 'lnd_ice_bnd_type%IS_adot_sg  ', chks
+  endif
   100 FORMAT("CHECKSUM::",A32," = ",Z20)
 end subroutine lnd_ice_bnd_type_chksum
 

@@ -230,6 +230,7 @@ type fast_ice_avg_type
                     !! WindStr_[xy]_A, between 0 & 1 [nondim].
   real, allocatable, dimension(:,:) :: ice_cover !< The fractional ice coverage, summed across all
                     !! thickness categories, used in calculating WindStr_[xy]_A, between 0 & 1 [nondim].q
+  real, allocatable, dimension(:,:) :: adot  !< The optional mass flux over land ice [R Z T-1 ~> kg m-2 s-1].
 
   integer :: copy_calls = 0 !< The number of times this structure has been
                     !! copied from the fast ice to the slow ice.
@@ -727,7 +728,7 @@ end subroutine rescale_ice_state_restart_fields
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> alloc_fast_ice_avg allocates and zeros out the arrays in a fast_ice_avg_type.
-subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes)
+subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes, ice_sheet_enabled)
   type(fast_ice_avg_type), pointer    :: FIA !< A type containing averages of fields
                                              !! (mostly fluxes) over the fast updates
   type(hor_index_type),    intent(in) :: HI  !< The horizontal index type describing the domain
@@ -739,9 +740,13 @@ subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes)
                  optional, intent(in) :: gas_fluxes !< If present, this type describes the
                                              !! additional gas or other tracer fluxes between the
                                              !! ocean, ice, and atmosphere.
+  logical, optional,       intent(in) :: ice_sheet_enabled
 
   integer :: isc, iec, jsc, jec, isd, ied, jsd, jed, CatIce
+  logical :: do_IS
 
+  do_IS=.false.
+  if (present(ice_sheet_enabled)) do_IS=ice_sheet_enabled
   if (.not.associated(FIA)) allocate(FIA)
   CatIce = IG%CatIce
   isc = HI%isc ; iec = HI%iec ; jsc = HI%jsc ; jec = HI%jec
@@ -759,6 +764,7 @@ subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes)
   allocate(FIA%fprec_top(isd:ied, jsd:jed, 0:CatIce), source=0.0)
   allocate(FIA%runoff(isd:ied, jsd:jed), source=0.0)
   allocate(FIA%calving(isd:ied, jsd:jed), source=0.0)
+  if (do_IS) allocate(FIA%adot(isd:ied, jsd:jed), source=0.0)
   allocate(FIA%calving_preberg(isd:ied, jsd:jed), source=0.0) ! diag
   allocate(FIA%runoff_hflx(isd:ied, jsd:jed), source=0.0)
   allocate(FIA%calving_hflx(isd:ied, jsd:jed), source=0.0)
@@ -1404,6 +1410,7 @@ subroutine copy_FIA_to_FIA(FIA_in, FIA_out, HI_in, HI_out, IG)
     FIA_out%p_atm_surf(i2,j2) = FIA_in%p_atm_surf(i,j)
     FIA_out%runoff(i2,j2) = FIA_in%runoff(i,j)
     FIA_out%calving(i2,j2) =  FIA_in%calving(i,j)
+    if (allocated(FIA_in%adot)) FIA_out%adot(i2,j2) =  FIA_in%adot(i,j)
     FIA_out%runoff_hflx(i2,j2) = FIA_in%runoff_hflx(i,j)
     FIA_out%calving_hflx(i2,j2) =  FIA_in%calving_hflx(i,j)
     FIA_out%Tskin_avg(i2,j2) = FIA_in%Tskin_avg(i,j)
@@ -1517,6 +1524,8 @@ subroutine redistribute_FIA_to_FIA(FIA_in, FIA_out, domain_in, domain_out, G_out
                            FIA_out%runoff, complete=.false.)
     call redistribute_data(domain_in, FIA_in%calving, domain_out, &
                            FIA_out%calving, complete=.false.)
+    if (allocated(FIA_in%adot)) call redistribute_data(domain_in, FIA_in%adot, &
+         domain_out, FIA_out%adot, complete=.false.)
     call redistribute_data(domain_in, FIA_in%runoff_hflx, domain_out, &
                            FIA_out%runoff_hflx, complete=.false.)
     call redistribute_data(domain_in, FIA_in%calving_hflx, domain_out, &
@@ -1591,6 +1600,8 @@ subroutine redistribute_FIA_to_FIA(FIA_in, FIA_out, domain_in, domain_out, G_out
                            FIA_out%runoff, complete=.false.)
     call redistribute_data(domain_in, null_ptr2D, domain_out, &
                            FIA_out%calving, complete=.false.)
+    if (allocated(FIA_out%adot)) call redistribute_data(domain_in, null_ptr2D, &
+         domain_out, FIA_out%adot, complete=.false.)
     call redistribute_data(domain_in, null_ptr2D, domain_out, &
                            FIA_out%runoff_hflx, complete=.false.)
     call redistribute_data(domain_in, null_ptr2D, domain_out, &
@@ -1666,6 +1677,8 @@ subroutine redistribute_FIA_to_FIA(FIA_in, FIA_out, domain_in, domain_out, G_out
                            null_ptr2D, complete=.false.)
     call redistribute_data(domain_in, FIA_in%calving, domain_out, &
                            null_ptr2D, complete=.false.)
+    if (allocated(FIA_in%adot)) call redistribute_data(domain_in, FIA_in%adot, &
+         domain_out, null_ptr2D, complete=.false.)
     call redistribute_data(domain_in, FIA_in%runoff_hflx, domain_out, &
                            null_ptr2D, complete=.false.)
     call redistribute_data(domain_in, FIA_in%calving_hflx, domain_out, &
@@ -1969,6 +1982,9 @@ subroutine register_fast_to_slow_restarts(FIA, Rad, TSF, mpp_domain, US, Ice_res
   call register_restart_field(Ice_restart, 'runoff', FIA%runoff, &
                               mandatory=.false., units="kg m-2 s-1", conversion=US%RZ_T_to_kg_m2s)
   call register_restart_field(Ice_restart, 'calving', FIA%calving, &
+       mandatory=.false., units="kg m-2 s-1", conversion=US%RZ_T_to_kg_m2s)
+  if (allocated(FIA%adot)) &
+  call register_restart_field(Ice_restart, 'adot', FIA%adot, &
                               mandatory=.false., units="kg m-2 s-1", conversion=US%RZ_T_to_kg_m2s)
   call register_restart_field(Ice_restart, 'runoff_hflx', FIA%runoff_hflx, &
                               mandatory=.false., units="W m-2", conversion=US%QRZ_T_to_W_m2)
@@ -2103,6 +2119,7 @@ subroutine dealloc_fast_ice_avg(FIA)
   deallocate(FIA%flux_sw_top)
   deallocate(FIA%runoff, FIA%calving, FIA%runoff_hflx, FIA%calving_hflx)
   deallocate(FIA%calving_preberg, FIA%calving_hflx_preberg)
+  if (allocated(FIA%adot)) deallocate(FIA%adot)
 
   deallocate(FIA%tmelt, FIA%bmelt, FIA%frazil_left)
   deallocate(FIA%WindStr_x, FIA%WindStr_y, FIA%p_atm_surf)
@@ -2288,6 +2305,7 @@ subroutine FIA_chksum(mesg, FIA, G, US, check_ocean)
   call hchksum(FIA%p_atm_surf, trim(mesg)//" FIA%p_atm_surf", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
   call hchksum(FIA%runoff, trim(mesg)//" FIA%runoff", G%HI, scale=US%RZ_T_to_kg_m2s)
   call hchksum(FIA%calving, trim(mesg)//" FIA%calving", G%HI, scale=US%RZ_T_to_kg_m2s)
+  if (allocated(FIA%adot)) call hchksum(FIA%adot, trim(mesg)//" FIA%adot", G%HI, scale=US%RZ_T_to_kg_m2s)
   call hchksum(FIA%runoff_hflx, trim(mesg)//" FIA%runoff_hflx", G%HI, scale=US%QRZ_T_to_W_m2)
   call hchksum(FIA%calving_hflx, trim(mesg)//" FIA%calving_hflx", G%HI, scale=US%QRZ_T_to_W_m2)
   call hchksum(FIA%ice_free, trim(mesg)//" FIA%ice_free", G%HI)
