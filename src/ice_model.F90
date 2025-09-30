@@ -691,6 +691,12 @@ subroutine set_ocean_top_fluxes(Ice, IST, IOF, FIA, OSS, G, US, IG, sCS)
       Ice%adot(i2,j2) = US%RZ_T_to_kg_m2s*FIA%adot(i,j)
     enddo ; enddo
   endif
+  if (allocated(IOF%salt_left_behind)) then
+    do j=jsc,jec ; do i=isc,iec
+      i2 = i+i_off ; j2 = j+j_off! Use these to correct for indexing differences.
+      Ice%salt_left_behind(i2,j2) = US%RZ_T_to_kg_m2s*IOF%salt_left_behind(i,j)
+    enddo ; enddo
+  endif
 
   ! This copy may need to be skipped in the first step of a cold-start run with lagged ice
   ! coupling, but otherwise if it is skipped may indicate a problem that should be trapped.
@@ -1202,9 +1208,9 @@ subroutine set_ice_surface_state(Ice, IST, OSS, Rad, FIA, G, US, IG, fCS)
     call chksum(G%mask2dT(isc:iec,jsc:jec), "Intermed G%mask2dT")
 !   if (allocated(OSS%u_ocn_C) .and. allocated(OSS%v_ocn_C)) &
 !     call uvchksum(OSS%u_ocn_C, "OSS%u_ocn_C", &
-!                   OSS%v_ocn_C, "OSS%v_ocn_C", G%HI, haloshift=1, scale=US%L_T_to_m_s)
+!                   OSS%v_ocn_C, "OSS%v_ocn_C", G%HI, haloshift=1, unscale=US%L_T_to_m_s)
 !   if (allocated(OSS%u_ocn_B)) &
-!     call Bchksum(OSS%u_ocn_B, "OSS%u_ocn_B", G%HI, haloshift=1, scale=US%L_T_to_m_s)
+!     call Bchksum(OSS%u_ocn_B, "OSS%u_ocn_B", G%HI, haloshift=1, unscale=US%L_T_to_m_s)
 !   if (allocated(OSS%v_ocn_B)) &
 !     call Bchksum(OSS%v_ocn_B, "OSS%v_ocn_B", G%HI, haloshift=1)
     call chksum(G%sin_rot(isc:iec,jsc:jec), "G%sin_rot")
@@ -1797,6 +1803,8 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                               ! after a restart.Provide a switch to turn this option off.
   logical :: recategorize_ice ! If true, adjust the distribution of the ice among thickness
                               ! categories after initialization.
+  logical :: do_brine_plume   ! If true, keep track of how much salt is left in the ocean
+                              ! during ice formation.
   logical :: read_hlim_vals   ! If true, read the list of ice thickness lower limits
                               ! from an input file.
   real,  allocatable, dimension(:) :: &
@@ -2035,6 +2043,10 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                  "If true, allow ice to be transmuted directly into seawater with a spatially "//&
                  "varying rate as a form of outflow open boundary condition.", &
                  default=.false., do_not_log=.true.) ! Defer logging to SIS_slow_thermo.
+  call get_param(param_file, mdl, "DO_BRINE_PLUME", do_brine_plume, &
+                 "If true, keep track of the salt left in the ocean during "//&
+                 "ice formation.", default=.false., &
+                 do_not_log=.true.) ! Defer logging to SIS_slow_thermo.
   call get_param(param_file, mdl, "READ_HLIM_VALS", read_hlim_vals, &
                  "If true, read the lower limits on the ice thickness"//&
                  "categories.", default=.false.)
@@ -2088,6 +2100,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     Ice%sCS%redo_fast_update = redo_fast_update
     Ice%sCS%bounds_check = bounds_check
     Ice%sCS%debug = debug_slow
+    Ice%sCS%do_brine_plume = do_brine_plume
 
     ! Set up the ice-specific grid describing categories and ice layers.
     call set_ice_grid(sIG, US, param_file, nCat_dflt, ocean_part_min_dflt=opm_dflt)
@@ -2160,7 +2173,8 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     call alloc_simple_OSS(Ice%sCS%sOSS, sHI, gas_fields_ocn)
 
     call alloc_ice_ocean_flux(Ice%sCS%IOF, sHI, do_stress_mag=Ice%sCS%pass_stress_mag, &
-                              do_iceberg_fields=Ice%sCS%do_icebergs, do_transmute=transmute_ice)
+                              do_iceberg_fields=Ice%sCS%do_icebergs, do_transmute=transmute_ice, &
+                              do_brine_plume=Ice%sCS%do_brine_plume)
     Ice%sCS%IOF%slp2ocean = slp2ocean
     Ice%sCS%IOF%flux_uv_stagger = Ice%flux_uv_stagger
     call alloc_fast_ice_avg(Ice%sCS%FIA, sHI, sIG, interp_fluxes, gas_fluxes, ice_sheet_enabled=do_IS)

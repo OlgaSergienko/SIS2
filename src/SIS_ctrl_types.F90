@@ -115,6 +115,8 @@ type SIS_slow_CS
   logical :: bounds_check   !< If true, check for sensible values of thicknesses
                             !! temperatures, fluxes, etc.
   logical :: debug          !< If true, write verbose checksums for debugging purposes.
+  logical :: do_brine_plume !< If true, keep track of how much salt stays in the ocean
+                            !! during ice formation.
 
 !  type(SIS_tracer_registry_type), pointer :: TrReg => NULL()
 
@@ -161,7 +163,7 @@ type SIS_slow_CS
   type(total_sfc_flux_type), pointer :: XSF => NULL()  !< A structure of the excess
                             !! fluxes between the atmosphere and the ice or ocean
                             !! relative to those stored in TSF.
-  type(isponge_CS), pointer :: isponge_CSp => NULL() !< A pointer to the control structure containing 
+  type(isponge_CS), pointer :: isponge_CSp => NULL() !< A pointer to the control structure containing
                                                      ! ice relaxation (sponge) arrays, variables
 
 end type SIS_slow_CS
